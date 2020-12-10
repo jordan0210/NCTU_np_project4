@@ -1,24 +1,23 @@
 #include "socks_server.h"
 
-class session
-    :public std::enable_shared_from_this<session>{
+class connect_session
+    :public std::enable_shared_from_this<connect_session>{
     private:
         tcp::resolver resolver;
-        tcp::socket client_socket;
-        tcp::socket server_socket;
+        tcp::socket client_socket, server_socket;
         boost::asio::io_context& io_context;
-        boost::asio::ip::tcp::resolver::results_type endpoints;
-        string url, port;
-        enum { max_length = 1024};
+        boost::asio::ip::tcp::resolver::results_type endpoint;
+        Request req;
+        enum { max_length = 1024 };
         unsigned char UL_buf[max_length];
         unsigned char DL_buf[max_length];
 
     public:
-        session(boost::asio::io_context& io_context,
+        connect_session(boost::asio::io_context& io_context,
             tcp::socket socket,
-            string url, string port)
-            :resolver(io_context), server_socket(io_context), client_socket(std::move(socket)), io_context(io_context),
-            url(url), port(port){
+            Request req)
+            :resolver(io_context), client_socket(std::move(socket)), server_socket(io_context), io_context(io_context),
+            req(req){
         }
 
         void start(){
@@ -29,12 +28,12 @@ class session
         void do_resolve(){
             auto self(shared_from_this());
             cout << "Start resolve." << endl;
-            resolver.async_resolve(url, port,
+            resolver.async_resolve(req.url, to_string(req.dstPort),
                 [this, self](const boost::system::error_code &ec,
                     const boost::asio::ip::tcp::resolver::results_type results){
                     if (!ec){
                         cout << "Success resolve." << endl;
-                        endpoints = results;
+                        endpoint = results;
                         do_connect();
                     } else {
                         client_socket.close();
@@ -47,13 +46,16 @@ class session
         void do_connect(){
             auto self(shared_from_this());
             cout << "Start connect." << endl;
-            boost::asio::async_connect(server_socket, endpoints,
+            boost::asio::async_connect(server_socket, endpoint,
                 [this, self](const boost::system::error_code &ec, tcp::endpoint ed){
                     if (!ec){
                         cout << "Success connect." << endl;
-                        do_UL_read();
-                        do_DL_read();
+                        (this->req).url = server_socket.remote_endpoint().address().to_string();
+                        set_reply(true);
+                        do_reply();
                     } else {
+                        set_reply(false);
+                        do_reply();
                         client_socket.close();
                         server_socket.close();
                     }
@@ -68,10 +70,6 @@ class session
                 [this, self](boost::system::error_code ec, std::size_t length){
                     if (!ec){
                         cout << "Success UL read." << endl;
-                        string data = (char*)UL_buf;
-                        cout << "****************************" << endl;
-                        cout << data << endl;
-                        cout << "****************************" << endl;
                         do_UL_write(length);
                     } else {
                         client_socket.close();
@@ -103,10 +101,6 @@ class session
                 [this, self](boost::system::error_code ec, std::size_t length){
                     if (!ec){
                         cout << "Success DL read." << endl;
-                        string data = (char*)DL_buf;
-                        cout << "****************************" << endl;
-                        cout << data << endl;
-                        cout << "****************************" << endl;
                         do_DL_write(length);
                     } else {
                         client_socket.close();
@@ -130,6 +124,60 @@ class session
                 }
             );
         }
+
+        void do_reply(){
+            auto self(shared_from_this());
+            boost::asio::async_write(client_socket, boost::asio::buffer(DL_buf, sizeof(unsigned char)*8),
+                [this, self](boost::system::error_code ec, std::size_t /*length*/){
+                    if (!ec){
+                        cout << "Success reply." << endl;
+                        do_UL_read();
+                        do_DL_read();
+                    } else {
+                        client_socket.close();
+                        server_socket.close();
+                    }
+                }
+            );
+        }
+
+        void set_reply(bool state){
+            bzero(DL_buf, sizeof(DL_buf));
+            string reply;
+
+            DL_buf[0] = 0x00;
+            if (!state){
+                DL_buf[1] = 0x5b;
+                reply = "Reject";
+            } else {
+                if (checkFireWall(req.CD, req.url)){
+                    DL_buf[1] = 0x5a;
+                    reply = "Accept";
+                }
+                else {
+                    DL_buf[1] = 0x5b;
+                    reply = "Reject";
+                }
+            }
+            DL_buf[2] = req.dstPort / 256;
+            DL_buf[3] = req.dstPort % 256;
+            DL_buf[4] = 0x00;
+            DL_buf[5] = 0x00;
+            DL_buf[6] = 0x00;
+            DL_buf[7] = 0x00;
+
+            cout << "<S_IP>: " << client_socket.local_endpoint().address().to_string() << endl;
+            cout << "<S_PORT>: " << to_string(htons(client_socket.local_endpoint().port())) << endl;
+            cout << "<D_IP>: " << req.url << endl;
+            cout << "<D_PORT>: " << req.dstPort << endl;
+            if (req.CD == 0x01)
+                cout << "<Command>: CONNECT" << endl;
+            else if (req.CD == 0x02)
+                cout << "<Command>: BIND" << endl;
+            else
+                cout << "<Command>: UNKNOWN -- CD = " << (int)req.CD << endl;
+            cout << "<Reply>: " << reply << endl;
+        }
 };
 
 class socks
@@ -151,41 +199,49 @@ class socks
                 [this, self](boost::system::error_code ec, std::size_t length){
                     if (!ec){
                         Request req;
-                        parseRequest(data_, req, data_);
-                        string reply;
-                        if (req.VN != 0x04){
-                            *(data_+1) = 0x5b;
-                            reply = "Reject";
-                        } else {
-                            if (checkFireWall(req.dstIP)){
-                                *(data_+1) = 0x5a;
-                                reply = "Accept";
-                            } else {
-                                *(data_+1) = 0x5b;
-                                reply = "Reject";
-                            }
-                        }
+                        parseRequest(data_, req);
 
-                        cout << "<S_IP>: " << socket_.local_endpoint().address().to_string() << endl;
-                        cout << "<S_PORT>: " << to_string(htons(socket_.local_endpoint().port())) << endl;
-                        cout << "<D_IP>: " << req.dstIP << endl;
-                        cout << "<D_PORT>: " << req.dstPort << endl;
-                        if (req.CD == 0x01)
-                            cout << "<Command>: CONNECT" << endl;
-                        else if (req.CD == 0x02)
-                            cout << "<Command>: BIND" << endl;
-                        else
-                            cout << "<Command>: UNKNOWN -- CD = " << (int)req.CD << endl;
-                        cout << "<Reply>: " << reply << endl;
+                        make_shared<connect_session>(io_context, move(socket_), req)->start();
+                        io_context.run();
 
-                        cout << "---------------" << endl;
-                        for (int i=0; i<8; i++){
-                            cout << i << ": ";
-                            printf("%2x ", *(data_+i));
-                            cout << endl;
-                        }
 
-                        do_write(req, sizeof(unsigned char)*8);
+                        // TODO Delete
+                        // string reply;
+                        // if (req.VN != 0x04){
+                        //     *(data_+1) = 0x5b;
+                        //     reply = "Reject";
+                        // } else {
+                        //     if (checkFireWall(req.CD, req.dstIP)){
+                        //         *(data_+1) = 0x5a;
+                        //         reply = "Accept";
+                        //     } else {
+                        //         *(data_+1) = 0x5b;
+                        //         reply = "Reject";
+                        //     }
+                        // }
+                        // cout << reply << endl;
+
+                        // cout << "<S_IP>: " << socket_.local_endpoint().address().to_string() << endl;
+                        // cout << "<S_PORT>: " << to_string(htons(socket_.local_endpoint().port())) << endl;
+                        // cout << "<D_IP>: " << req.dstIP << endl;
+                        // cout << "<D_PORT>: " << req.dstPort << endl;
+                        // if (req.CD == 0x01)
+                        //     cout << "<Command>: CONNECT" << endl;
+                        // else if (req.CD == 0x02)
+                        //     cout << "<Command>: BIND" << endl;
+                        // else
+                        //     cout << "<Command>: UNKNOWN -- CD = " << (int)req.CD << endl;
+                        // cout << "<Reply>: " << reply << endl;
+
+                        // cout << "---------------" << endl;
+                        // for (int i=0; i<8; i++){
+                        //     cout << i << ": ";
+                        //     printf("%2x ", *(data_+i));
+                        //     cout << endl;
+                        // }
+
+
+                        // do_write(req, sizeof(unsigned char)*8);
                     } else {
                         socket_.close();
                     }
@@ -198,24 +254,36 @@ class socks
             boost::asio::async_write(socket_, boost::asio::buffer(data_, length),
                 [this, self, req](boost::system::error_code ec, std::size_t /*length*/){
                     if (!ec){
-                        if (*(this->data_+1) == 0x5a){
-                            string url;
-                            if (req.dstIP == "0.0.0.1")
-                                url = (char*)req.domainName;
-                            else
-                                url = req.dstIP;
-                            cout << url << endl;
-                            make_shared<session>(io_context, move(socket_), url, to_string(req.dstPort))->start();
-                            io_context.run();
-                        }
+                        // if (req.CD == 0x01){
+                            if (*(this->data_+1) == 0x5a){
+                                string url;
+                                if (req.dstIP == "0.0.0.1")
+                                    url = (char*)req.domainName;
+                                else
+                                    url = req.dstIP;
+                                cout << url << endl;
+                                // make_shared<connect_session>(io_context, move(socket_), url, to_string(req.dstPort))->start();
+                                // io_context.run();
+                            }
+                        // } else if (req.CD == 0x02){
+                        //     if (*(this->data_+1) == 0x5a){
+                        //         tcp::endpoint bind_endpoint(tcp::v4(), htons(socket_.local_endpoint().port()));
+                        //         socket_.bind(bind_endpoint);
+                        //         tcp::acceptor bind_acceptor(io_context, bind_endpoint);
+                        //         bind_acceptor.async_accept(
+                        //             [this, ](boost::system::error_code ec, tcp::socket socket){
+                        //                 if (!ec){
+                        //                     make_shared<session>(io_context, move(socket_), url, to_string(req.dstPort))->startConnect();
+                        //                     io_context.run();
+                        //                 }
+                        //             }
+                        //         );
+                        //     }
+                        // }
                     } else {
                         socket_.close();
                     }
             });
-        }
-
-        bool checkFireWall(string dstIp){
-            return true;
         }
 
         tcp::socket socket_;
@@ -234,12 +302,13 @@ class server{
         void do_accept(){
             acceptor_.async_accept(
                 [this](boost::system::error_code ec, tcp::socket socket){
-                if (!ec){
-                    std::make_shared<socks>(std::move(socket))->start();
-                }
+                    if (!ec){
+                        std::make_shared<socks>(std::move(socket))->start();
+                    }
 
-                do_accept();
-            });
+                    do_accept();
+                }
+            );
         }
 
         tcp::acceptor acceptor_;
@@ -263,7 +332,7 @@ int main(int argc, char* argv[]){
   return 0;
 }
 
-void parseRequest(unsigned char *data, Request &req, unsigned char *res){
+void parseRequest(unsigned char *data, Request &req){
     req.VN = data[0];
     req.CD = data[1];
     req.dstPort = ntohs(*(short *)(data + 2));
@@ -273,14 +342,51 @@ void parseRequest(unsigned char *data, Request &req, unsigned char *res){
     while (data[8 + req.userIdLength] != 0x00){
         req.userIdLength++;
     }
+    req.url = req.dstIP;
     if (req.dstIP == "0.0.0.1"){
         req.domainName = data + 9 + req.userIdLength;
         req.domainNameLength = 0;
         while(data[9 + req.userIdLength + req.domainNameLength] != 0x00){
             req.domainNameLength++;
         }
+        req.url = (char*)req.domainName;
     }
-    res[0] = 0x00;
-    // bzero(res, sizeof(unsigned char)*8);
-    // memcpy(data+2, res+2, sizeof(char)*6);
+}
+
+bool checkFireWall(unsigned char CD, string url){
+    bool accept = false;
+    ifstream fin;
+    fin.open("./socks.conf");
+    string line;
+    vector<config> configs;
+    while (getline(fin, line)){
+        config new_config;
+        if (line[7] == 'c')
+            new_config.mode = 0x01;
+        else if (line[7] == 'b')
+            new_config.mode = 0x02;
+        string temp = line.substr(9);
+        new_config.rule = "";
+        for (int i=0; i<(int)temp.length(); i++){
+            if (temp[i] == '*'){
+                new_config.rule += "[0-9]+";
+            } else if (temp[i] == '.'){
+                new_config.rule += "\\.";
+            } else {
+                new_config.rule += temp[i];
+            }
+        }
+        configs.push_back(new_config);
+    }
+    for (int i=0; i<(int)configs.size(); i++){
+        if (CD == configs[i].mode){
+            regex new_regex(configs[i].rule);
+            if (regex_match(url, new_regex)){
+                accept = true;
+                break;
+            }
+        }
+    }
+
+    return accept;
 }

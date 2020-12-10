@@ -6,6 +6,9 @@
 #include <boost/asio.hpp>
 
 #include <string.h>
+#include <vector>
+#include <fstream>
+#include <regex>
 #include <sys/wait.h>
 
 using boost::asio::ip::tcp;
@@ -20,9 +23,17 @@ typedef struct socket4_request{
     int userIdLength;
     unsigned char *domainName;
     int domainNameLength;
+    string url;
 }Request;
+
+typedef struct firewall_config{
+    unsigned char mode;
+    string rule;
+}config;
 
 char **test_argv;
 boost::asio::io_context io_context;
 
-void parseRequest(unsigned char *data, Request &req, unsigned char *res);
+void parseRequest(unsigned char *data, Request &req);
+
+bool checkFireWall(unsigned char CD, string url);
