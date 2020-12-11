@@ -7,6 +7,7 @@ CXX_LIB_PARAMS=$(addprefix -L , $(CXX_LIB_DIRS))
 
 all:
 	$(CXX) socks_server.cpp socks_server.h -o socks_server $(CXX_INCLUDE_PARAMS) $(CXX_LIB_PARAMS) $(CXXFLAGS)
+	$(CXX) hw4.cpp hw4.h -o hw4.cgi $(CXX_INCLUDE_PARAMS) $(CXX_LIB_PARAMS) $(CXXFLAGS)
 
 clean:
 	rm -f http_server

@@ -70,6 +70,9 @@ class connect_session
                 [this, self](boost::system::error_code ec, std::size_t length){
                     if (!ec){
                         cout << "Success UL read." << endl;
+                        cout << "**************************" << endl;
+                        cout << UL_buf << endl;
+                        cout << "**************************" << endl;
                         do_UL_write(length);
                     } else {
                         client_socket.close();
@@ -101,6 +104,9 @@ class connect_session
                 [this, self](boost::system::error_code ec, std::size_t length){
                     if (!ec){
                         cout << "Success DL read." << endl;
+                        cout << "--------------------------" << endl;
+                        cout << DL_buf << endl;
+                        cout << "--------------------------" << endl;
                         do_DL_write(length);
                     } else {
                         client_socket.close();
@@ -203,45 +209,6 @@ class socks
 
                         make_shared<connect_session>(io_context, move(socket_), req)->start();
                         io_context.run();
-
-
-                        // TODO Delete
-                        // string reply;
-                        // if (req.VN != 0x04){
-                        //     *(data_+1) = 0x5b;
-                        //     reply = "Reject";
-                        // } else {
-                        //     if (checkFireWall(req.CD, req.dstIP)){
-                        //         *(data_+1) = 0x5a;
-                        //         reply = "Accept";
-                        //     } else {
-                        //         *(data_+1) = 0x5b;
-                        //         reply = "Reject";
-                        //     }
-                        // }
-                        // cout << reply << endl;
-
-                        // cout << "<S_IP>: " << socket_.local_endpoint().address().to_string() << endl;
-                        // cout << "<S_PORT>: " << to_string(htons(socket_.local_endpoint().port())) << endl;
-                        // cout << "<D_IP>: " << req.dstIP << endl;
-                        // cout << "<D_PORT>: " << req.dstPort << endl;
-                        // if (req.CD == 0x01)
-                        //     cout << "<Command>: CONNECT" << endl;
-                        // else if (req.CD == 0x02)
-                        //     cout << "<Command>: BIND" << endl;
-                        // else
-                        //     cout << "<Command>: UNKNOWN -- CD = " << (int)req.CD << endl;
-                        // cout << "<Reply>: " << reply << endl;
-
-                        // cout << "---------------" << endl;
-                        // for (int i=0; i<8; i++){
-                        //     cout << i << ": ";
-                        //     printf("%2x ", *(data_+i));
-                        //     cout << endl;
-                        // }
-
-
-                        // do_write(req, sizeof(unsigned char)*8);
                     } else {
                         socket_.close();
                     }
@@ -249,42 +216,25 @@ class socks
             );
         }
 
-        void do_write(Request req, std::size_t length){
-            auto self(shared_from_this());
-            boost::asio::async_write(socket_, boost::asio::buffer(data_, length),
-                [this, self, req](boost::system::error_code ec, std::size_t /*length*/){
-                    if (!ec){
-                        // if (req.CD == 0x01){
-                            if (*(this->data_+1) == 0x5a){
-                                string url;
-                                if (req.dstIP == "0.0.0.1")
-                                    url = (char*)req.domainName;
-                                else
-                                    url = req.dstIP;
-                                cout << url << endl;
-                                // make_shared<connect_session>(io_context, move(socket_), url, to_string(req.dstPort))->start();
-                                // io_context.run();
-                            }
-                        // } else if (req.CD == 0x02){
-                        //     if (*(this->data_+1) == 0x5a){
-                        //         tcp::endpoint bind_endpoint(tcp::v4(), htons(socket_.local_endpoint().port()));
-                        //         socket_.bind(bind_endpoint);
-                        //         tcp::acceptor bind_acceptor(io_context, bind_endpoint);
-                        //         bind_acceptor.async_accept(
-                        //             [this, ](boost::system::error_code ec, tcp::socket socket){
-                        //                 if (!ec){
-                        //                     make_shared<session>(io_context, move(socket_), url, to_string(req.dstPort))->startConnect();
-                        //                     io_context.run();
-                        //                 }
-                        //             }
-                        //         );
-                        //     }
-                        // }
-                    } else {
-                        socket_.close();
-                    }
-            });
-        }
+        // void do_write(Request req, std::size_t length){
+        //     auto self(shared_from_this());
+        //     boost::asio::async_write(socket_, boost::asio::buffer(data_, length),
+        //         [this, self, req](boost::system::error_code ec, std::size_t /*length*/){
+        //             if (!ec){
+        //                 // if (req.CD == 0x01){
+        //                     if (*(this->data_+1) == 0x5a){
+        //                         string url;
+        //                         if (req.dstIP == "0.0.0.1")
+        //                             url = (char*)req.domainName;
+        //                         else
+        //                             url = req.dstIP;
+        //                         cout << url << endl;
+        //                     }
+        //             } else {
+        //                 socket_.close();
+        //             }
+        //     });
+        // }
 
         tcp::socket socket_;
         enum { max_length = 1024 };
