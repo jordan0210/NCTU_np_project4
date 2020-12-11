@@ -32,6 +32,7 @@ typedef struct firewall_config{
 }config;
 
 char **test_argv;
+short bindPort = 27219;
 boost::asio::io_context io_context;
 
 void parseRequest(unsigned char *data, Request &req);

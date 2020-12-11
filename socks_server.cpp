@@ -5,6 +5,7 @@ class connect_session
     private:
         tcp::resolver resolver;
         tcp::socket client_socket, server_socket;
+        boost::asio::ip::tcp::acceptor acceptor;
         boost::asio::io_context& io_context;
         boost::asio::ip::tcp::resolver::results_type endpoint;
         Request req;
@@ -16,23 +17,42 @@ class connect_session
         connect_session(boost::asio::io_context& io_context,
             tcp::socket socket,
             Request req)
-            :resolver(io_context), client_socket(std::move(socket)), server_socket(io_context), io_context(io_context),
+            :resolver(io_context),
+            client_socket(std::move(socket)),
+            server_socket(io_context),
+            acceptor(io_context),
+            io_context(io_context),
             req(req){
         }
 
         void start(){
-            do_resolve();
+            if (req.CD == 0x01){
+                do_resolve();
+            } else if (req.CD == 0x02){
+                bool success = false;
+                while(!success){
+                    try{
+                        acceptor = move(tcp::acceptor(io_context, tcp::endpoint(tcp::v4(), bindPort)));
+                        success = true;
+                    } catch (std::exception& e){
+                        bindPort++;
+                    }
+                }
+                set_reply(true);
+                do_reply(false);
+                do_accept();
+            }
         }
 
     private:
         void do_resolve(){
             auto self(shared_from_this());
-            cout << "Start resolve." << endl;
+            // cout << "Start resolve." << endl;
             resolver.async_resolve(req.url, to_string(req.dstPort),
                 [this, self](const boost::system::error_code &ec,
                     const boost::asio::ip::tcp::resolver::results_type results){
                     if (!ec){
-                        cout << "Success resolve." << endl;
+                        // cout << "Success resolve." << endl;
                         endpoint = results;
                         do_connect();
                     } else {
@@ -45,19 +65,35 @@ class connect_session
 
         void do_connect(){
             auto self(shared_from_this());
-            cout << "Start connect." << endl;
+            // cout << "Start connect." << endl;
             boost::asio::async_connect(server_socket, endpoint,
                 [this, self](const boost::system::error_code &ec, tcp::endpoint ed){
                     if (!ec){
-                        cout << "Success connect." << endl;
+                        // cout << "Success connect." << endl;
                         (this->req).url = server_socket.remote_endpoint().address().to_string();
                         set_reply(true);
-                        do_reply();
+                        do_reply(true);
                     } else {
                         set_reply(false);
-                        do_reply();
+                        do_reply(false);
                         client_socket.close();
                         server_socket.close();
+                    }
+                }
+            );
+        }
+
+        void do_accept(){
+            auto self(shared_from_this());
+            // cout << "Start accept." << endl;
+            acceptor.async_accept(
+                [this, self](boost::system::error_code ec, tcp::socket socket){
+                    if (!ec){
+                        server_socket = move(socket);
+                        (this->acceptor).close();
+                        do_reply(true);
+                    } else {
+                        client_socket.close();
                     }
                 }
             );
@@ -69,10 +105,10 @@ class connect_session
             client_socket.async_read_some(boost::asio::buffer(UL_buf, max_length),
                 [this, self](boost::system::error_code ec, std::size_t length){
                     if (!ec){
-                        cout << "Success UL read." << endl;
-                        cout << "**************************" << endl;
-                        cout << UL_buf << endl;
-                        cout << "**************************" << endl;
+                        // cout << "Success UL read." << endl;
+                        // cout << "**************************" << endl;
+                        // cout << UL_buf << endl;
+                        // cout << "**************************" << endl;
                         do_UL_write(length);
                     } else {
                         client_socket.close();
@@ -87,7 +123,7 @@ class connect_session
             boost::asio::async_write(server_socket, boost::asio::buffer(UL_buf, length),
                 [this, self](boost::system::error_code ec, std::size_t /*length*/){
                     if (!ec){
-                        cout << "Success UL write." << endl;
+                        // cout << "Success UL write." << endl;
                         do_UL_read();
                     } else {
                         client_socket.close();
@@ -103,10 +139,10 @@ class connect_session
             server_socket.async_read_some(boost::asio::buffer(DL_buf, max_length),
                 [this, self](boost::system::error_code ec, std::size_t length){
                     if (!ec){
-                        cout << "Success DL read." << endl;
-                        cout << "--------------------------" << endl;
-                        cout << DL_buf << endl;
-                        cout << "--------------------------" << endl;
+                        // cout << "Success DL read." << endl;
+                        // cout << "--------------------------" << endl;
+                        // cout << DL_buf << endl;
+                        // cout << "--------------------------" << endl;
                         do_DL_write(length);
                     } else {
                         client_socket.close();
@@ -121,7 +157,7 @@ class connect_session
             boost::asio::async_write(client_socket, boost::asio::buffer(DL_buf, length),
                 [this, self](boost::system::error_code ec, std::size_t /*length*/){
                     if (!ec){
-                        cout << "Success DL write." << endl;
+                        // cout << "Success DL write." << endl;
                         do_DL_read();
                     } else {
                         client_socket.close();
@@ -131,14 +167,21 @@ class connect_session
             );
         }
 
-        void do_reply(){
+        void do_reply(bool startSession){
             auto self(shared_from_this());
             boost::asio::async_write(client_socket, boost::asio::buffer(DL_buf, sizeof(unsigned char)*8),
-                [this, self](boost::system::error_code ec, std::size_t /*length*/){
+                [this, self, startSession](boost::system::error_code ec, std::size_t /*length*/){
+                    cout << "Success reply." << endl;
                     if (!ec){
-                        cout << "Success reply." << endl;
-                        do_UL_read();
-                        do_DL_read();
+                        if ((this->DL_buf)[1] == 0x5a){
+                            if (startSession){
+                                do_UL_read();
+                                do_DL_read();
+                            }
+                        } else {
+                            client_socket.close();
+                            server_socket.close();
+                        }
                     } else {
                         client_socket.close();
                         server_socket.close();
@@ -165,8 +208,8 @@ class connect_session
                     reply = "Reject";
                 }
             }
-            DL_buf[2] = req.dstPort / 256;
-            DL_buf[3] = req.dstPort % 256;
+            DL_buf[2] = bindPort / 256;
+            DL_buf[3] = bindPort % 256;
             DL_buf[4] = 0x00;
             DL_buf[5] = 0x00;
             DL_buf[6] = 0x00;
